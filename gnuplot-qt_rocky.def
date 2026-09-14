@@ -1,0 +1,80 @@
+Bootstrap: docker
+From: docker.io/rockylinux/rockylinux:9.8
+
+# Qt-enabled gnuplot (interactive "qt" terminal: mouse-over coordinates, zoom).
+# Built against Qt5, not Qt6: on EL9 the Qt5 tools (uic-qt5/moc-qt5/rcc-qt5)
+# are on PATH and gnuplot's Qt5 autodetect is reliable. Qt6 needs a PATH +
+# pkg-config workaround (gnuplot bug 2649) and is not worth it here.
+
+%post
+    set -e
+
+    GPVER=6.0.3
+
+    # CSC fakeroot builds: some dnf scriptlets call privileged commands that
+    # fail without unprivileged user namespaces. Stub them (documented CSC
+    # workaround; harmless if unused).
+    cp /usr/bin/true /usr/sbin/useradd
+    cp /usr/bin/true /usr/sbin/groupadd
+
+    # --- build toolchain + gnuplot deps (all in BaseOS/AppStream, no EPEL) ---
+    # qt5-linguist provides lrelease, needed to compile the qt terminal's
+    # bundled .ts translations into .qm (embedded via rcc).
+    # patch + glibc-gconv-extra: the docs step builds localized (Japanese) help
+    # and needs `patch` and iconv's EUC-JP converter, both absent from minimal Rocky.
+    dnf -y install \
+        gcc gcc-c++ make wget tar gzip pkgconf-pkg-config patch glibc-gconv-extra \
+        readline-devel cairo-devel pango-devel \
+        libX11-devel libXext-devel \
+        qt5-qtbase-devel qt5-qtsvg-devel qt5-linguist
+
+    # --- GATE 1: Qt5 build tools present? ---
+    for t in uic-qt5 moc-qt5 rcc-qt5 lrelease-qt5 ; do
+        command -v "$t" >/dev/null || { echo "MISSING TOOL: $t"; exit 1; }
+    done
+
+    # --- GATE 2: Qt5 pkg-config modules the qt terminal needs? ---
+    pkg-config --exists Qt5Core Qt5Gui Qt5Widgets Qt5PrintSupport Qt5Svg \
+        || { echo "MISSING Qt5 pkg-config modules"; exit 1; }
+
+    # --- fetch + configure ---
+    cd /tmp
+    wget -q "https://downloads.sourceforge.net/project/gnuplot/gnuplot/${GPVER}/gnuplot-${GPVER}.tar.gz"
+    tar xzf "gnuplot-${GPVER}.tar.gz"
+    cd "gnuplot-${GPVER}"
+
+    ./configure --prefix=/opt/gnuplot \
+                --with-qt=qt5 \
+                --with-cairo \
+                --with-readline=gnu \
+        > /tmp/gp-configure.log 2>&1 || { cat /tmp/gp-configure.log; exit 1; }
+    cat /tmp/gp-configure.log
+
+    # --- GATE 3: did configure actually enable the qt terminal? ---
+    grep -Eq 'Qt[[:space:]]*:[[:space:]]*yes' /tmp/gp-configure.log \
+        || { echo "configure did NOT enable qt -- check the summary above"; exit 1; }
+
+    make -j"$(nproc)"
+    make install
+
+%environment
+    export PATH=/opt/gnuplot/bin:$PATH
+    # Qt needs a writable XDG_RUNTIME_DIR. The host's /run/user/<uid> is not
+    # present inside the container, so point it at a container-local tmp dir.
+    export XDG_RUNTIME_DIR="/tmp/gnuplot-qt-$(id -u)"
+    mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null && chmod 700 "$XDG_RUNTIME_DIR"
+
+%runscript
+    exec /opt/gnuplot/bin/gnuplot "$@"
+
+%test
+    # runs at end of build (unless --notest): confirm qt is registered
+    /opt/gnuplot/bin/gnuplot -e "set terminal" 2>&1 | grep -qiw qt \
+        && echo "OK: qt terminal present" \
+        || { echo "FAIL: qt terminal missing"; exit 1; }
+
+%help
+    Qt-enabled gnuplot. Needs X11 forwarding for the interactive window.
+      apptainer run gnuplot-qt.sif
+      gnuplot> plot sin(x)
+      gnuplot> set mouse        # then mouse over the plot to read coordinates
