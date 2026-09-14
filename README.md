@@ -72,6 +72,9 @@ version, not per user.
 * The def has build gates + a `%test`, so a rebuild fails loudly at the exact
   step if a dependency or version drifts. Two values age: the base-image pin
   (`rockylinux:9.8`) and `GPVER`.
-* For a `CSCfi/singularity-recipes` contribution, use the build-only subset:
-  the def, a thin Makefile (`all` + `clean`), and a short README without the
-  Tykky/module steps.
+* To contribute this to a shared recipe repository, keep the generic parts and
+  drop the site-specific ones. Generic (keep): the def, the build/clean Makefile
+  targets, and a short note that the built image can be put on `PATH` with a
+  container wrapper such as Tykky's `wrap-container`. Site-specific (drop): the
+  concrete project paths, the modulefile, and the `wrap`/`module` targets that
+  install into them.
